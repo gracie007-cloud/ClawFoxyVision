@@ -1,0 +1,272 @@
+name: ClawFoxyVision Quality Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-check:
+    name: Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+        override: true
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Install cargo-tarpaulin
+      run: cargo install cargo-tarpaulin
+
+    - name: Install bc (for coverage percentage calculation)
+      run: sudo apt-get update && sudo apt-get install -y bc
+
+    - name: Run quality checks
+      run: |
+        chmod +x scripts/quality_check.sh
+        ./scripts/quality_check.sh
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      if: always()
+      with:
+        file: ./coverage/tarpaulin-report.json
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    needs: quality-check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Run tests
+      run: cargo test --verbose
+
+    - name: Run tests with examples
+      run: cargo test --examples --verbose
+
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: quality-check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build project
+      run: cargo build --release
+
+    - name: Build with examples
+      run: cargo build --examples
+
+    - name: Generate documentation
+      run: cargo doc --no-deps
+
+  documentation-check:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    needs: quality-check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check documentation structure
+      run: |
+        # Check if docs directory exists
+        if [ ! -d "docs" ]; then
+          echo "❌ docs/ directory not found"
+          exit 1
+        fi
+        
+        # Check for required documentation files
+        required_docs=("README.md" "user-guide.md" "developer-guide.md" "technical-reference.md" "FAQ.md" "CHANGELOG.md")
+        missing_docs=0
+        
+        for doc in "${required_docs[@]}"; do
+          if [ ! -f "docs/$doc" ]; then
+            echo "❌ Missing docs/$doc"
+            missing_docs=$((missing_docs + 1))
+          else
+            echo "✅ Found docs/$doc"
+          fi
+        done
+        
+        if [ $missing_docs -gt 0 ]; then
+          echo "❌ Missing $missing_docs required documentation files"
+          exit 1
+        fi
+        
+        echo "✅ All required documentation files exist"
+
+    - name: Check documentation links
+      run: |
+        # Simple check for broken links in markdown files
+        find docs -name "*.md" -exec grep -l "\[.*\](" {} \; | while read file; do
+          echo "Checking links in $file..."
+          grep -o "\[.*\]([^)]*)" "$file" | while read link; do
+            url=$(echo "$link" | sed 's/.*(\([^)]*\)).*/\1/')
+            if [[ $url == http* ]]; then
+              if ! curl -s --head "$url" > /dev/null; then
+                echo "⚠️  Warning: Broken link $url in $file"
+              fi
+            fi
+          done
+        done
+
+  examples-check:
+    name: Examples Check
+    runs-on: ubuntu-latest
+    needs: quality-check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check examples compilation
+      run: cargo check --examples
+
+    - name: Count examples
+      run: |
+        example_count=$(find examples -name "*.rs" -type f | wc -l)
+        echo "Found $example_count example files"
+        
+        if [ $example_count -eq 0 ]; then
+          echo "❌ No example files found"
+          exit 1
+        fi
+        
+        # Check for basic model examples
+        basic_examples=0
+        if [ -f "examples/lstm_example.rs" ]; then basic_examples=$((basic_examples + 1)); fi
+        if [ -f "examples/gru_example.rs" ]; then basic_examples=$((basic_examples + 1)); fi
+        if [ -f "examples/cnnlstm_example.rs" ]; then basic_examples=$((basic_examples + 1)); fi
+        
+        echo "Found $basic_examples basic model examples"
+        
+        if [ $basic_examples -lt 2 ]; then
+          echo "⚠️  Warning: Missing some basic model examples"
+        fi
+
+  summary:
+    name: Quality Check Summary
+    runs-on: ubuntu-latest
+    needs: [quality-check, test, build, documentation-check, examples-check]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Quality Check Summary
+      run: |
+        echo "🎯 ClawFoxyVision Quality Check Summary"
+        echo "======================================"
+        echo ""
+        
+        # Check job statuses
+        jobs=("quality-check" "test" "build" "documentation-check" "examples-check")
+        all_passed=true
+        
+        for job in "${jobs[@]}"; do
+          if [ "${{ needs.$job.result }}" == "success" ]; then
+            echo "✅ $job: PASSED"
+          else
+            echo "❌ $job: FAILED"
+            all_passed=false
+          fi
+        done
+        
+        echo ""
+        if [ "$all_passed" = true ]; then
+          echo "🎉 All quality checks passed!"
+          echo "Your code meets ClawFoxyVision quality standards:"
+          echo "✅ Code coverage requirements met"
+          echo "✅ Examples exist and compile"
+          echo "✅ Documentation is complete"
+          echo "✅ Tests pass"
+          echo "✅ Builds successfully"
+        else
+          echo "❌ Some quality checks failed!"
+          echo "Please fix the issues before merging."
+          echo "Refer to .cursorrules for detailed requirements."
+          exit 1
+        fi 

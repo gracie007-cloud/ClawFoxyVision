@@ -264,10 +264,42 @@ let (df, metadata) = read_financial_data("path/to/data.parquet")?;
 
 ## Contributing
 
-1. Follow the coding standards
-2. Add tests for new features
-3. Update documentation
-4. Submit pull requests with clear descriptions
+We welcome contributions to ClawFoxyVision! Please follow our quality standards:
+
+### Quality Requirements
+
+Every change must include:
+
+1. **Code Coverage**: Comprehensive tests for new functionality
+2. **Examples**: Working examples for external interfaces
+3. **Documentation**: Updated documentation in the `docs/` folder
+
+### Development Process
+
+1. **Read our guidelines**: Check `.cursorrules` for detailed requirements
+2. **Run quality checks**: Use `./scripts/quality_check.sh` to verify your changes
+3. **Follow coding standards**: Use `cargo fmt` and `cargo clippy`
+4. **Add tests**: Maintain >80% code coverage
+5. **Update documentation**: Keep docs in sync with code changes
+6. **Submit pull requests**: With clear descriptions and examples
+
+### Quick Start for Contributors
+
+```bash
+# Clone and setup
+git clone https://github.com/rustic-ml/ClawFoxyVision
+cd ClawFoxyVision
+cargo build
+
+# Run quality checks
+./scripts/quality_check.sh
+
+# Install development tools
+rustup component add rustfmt clippy
+cargo install cargo-tarpaulin
+```
+
+For detailed contribution guidelines, see [docs/developer-guide.md](docs/developer-guide.md).
 
 ## License
 
