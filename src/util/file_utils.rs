@@ -99,6 +99,17 @@ fn enhanced_process_dataframe(
         println!("DataFrame columns after renaming: {:?}", df.get_column_names());
     }
     
+    // Early projection to base OHLCV columns + engineered ones if present
+    let base_cols = ["open", "high", "low", "close", "volume"];
+    let available: Vec<&str> = base_cols
+        .iter()
+        .filter(|&&c| df.schema().contains(c))
+        .copied()
+        .collect();
+    if !available.is_empty() {
+        df = df.select(&available)?;
+    }
+    
     Ok((df, metadata))
 }
 

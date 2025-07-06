@@ -20,9 +20,12 @@ pub mod util {
     pub mod file_utils;
     pub mod model_utils;
     pub mod pre_processor;
+    pub mod metrics;
 }
 
 use rustalib::util::file_utils::read_financial_data;
+
+use util::metrics::init_metrics;
 
 pub fn generate_stock_dataframe(symbol: &str) -> PolarsResult<DataFrame> {
     // The file is now located in examples/csv with a different naming pattern
@@ -57,6 +60,7 @@ fn main() -> PolarsResult<()> {
     println!("Using device: CPU NdArray");
 
     // Enable Rayon default global thread pool for parallelism
+    init_metrics();
     ThreadPoolBuilder::new().build_global().unwrap();
 
     let args: Vec<String> = env::args().collect();

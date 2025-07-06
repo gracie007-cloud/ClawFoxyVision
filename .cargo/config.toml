@@ -1,0 +1,9 @@
+[profile.release]
+# Fewer codegen units allows LLVM to better optimise across crate boundaries.
+codegen-units = 1
+lto           = "thin"       # Use thin LTO for faster builds while still enabling cross-crate opts.
+opt-level     = 3             # Maximum speed.
+
+[env]
+# Enable CPU-specific instructions when compiling on the build machine.
+RUSTFLAGS = "-C target-cpu=native" 

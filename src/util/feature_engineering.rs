@@ -1,5 +1,6 @@
 // External crates
 use polars::prelude::*;
+use rayon::prelude::*;
 
 // Use rustalib for technical indicators
 use rustalib::indicators::moving_averages::{calculate_ema, calculate_sma};
@@ -32,22 +33,20 @@ pub fn calculate_period_returns(df: &DataFrame, periods: &[usize]) -> PolarsResu
     for &period in periods {
         let shifted = close.shift(period as i64);
         // Manual calculation of return
-        let mut returns = Vec::with_capacity(df.height());
-
         let close_values: Vec<_> = close.f64()?.into_iter().collect();
         let shifted_values: Vec<_> = shifted.f64()?.into_iter().collect();
 
-        for i in 0..close_values.len() {
-            if let (Some(curr), Some(prev)) = (close_values[i], shifted_values[i]) {
-                if prev != 0.0 {
-                    returns.push(Some((curr - prev) / prev));
-                } else {
-                    returns.push(Some(0.0));
+        let returns: Vec<Option<f64>> = (0..close_values.len())
+            .into_par_iter()
+            .map(|i| {
+                match (close_values[i], shifted_values[i]) {
+                    (Some(curr), Some(prev)) => {
+                        if prev != 0.0 { Some((curr - prev) / prev) } else { Some(0.0) }
+                    }
+                    _ => None,
                 }
-            } else {
-                returns.push(None);
-            }
-        }
+            })
+            .collect();
 
         let name = format!("returns_{}min", period);
         result.push(Series::new(name.into(), returns));
@@ -104,42 +103,40 @@ pub fn add_technical_indicators(df: &mut DataFrame) -> PolarsResult<DataFrame> {
     // Calculate returns
     let close_series = result_df.column("close")?.clone();
     let close_vals: Vec<Option<f64>> = close_series.f64()?.into_iter().collect();
-    let mut returns = Vec::with_capacity(close_vals.len());
-
-    // Manual calculation to avoid operator issues
-    for i in 1..close_vals.len() {
-        if let (Some(curr), Some(prev)) = (close_vals[i], close_vals[i - 1]) {
-            if prev != 0.0 {
-                returns.push(Some((curr - prev) / prev));
+    let mut returns: Vec<Option<f64>> = (0..close_vals.len())
+        .into_par_iter()
+        .map(|i| {
+            if i == 0 {
+                None
             } else {
-                returns.push(Some(0.0));
+                match (close_vals[i], close_vals[i - 1]) {
+                    (Some(curr), Some(prev)) => {
+                        if prev != 0.0 { Some((curr - prev) / prev) } else { Some(0.0) }
+                    }
+                    _ => None,
+                }
             }
-        } else {
-            returns.push(None);
-        }
-    }
+        })
+        .collect();
 
-    // Add leading value to match length
-    returns.insert(0, None);
     result_df.with_column(Series::new("returns".into(), returns))?;
 
-    // Calculate price range (High - Low) / Close using manual calculation
+    // Calculate price range (High - Low) / Close using rayon
     let high_vals: Vec<Option<f64>> = result_df.column("high")?.f64()?.into_iter().collect();
     let low_vals: Vec<Option<f64>> = result_df.column("low")?.f64()?.into_iter().collect();
-    let close_vals: Vec<Option<f64>> = result_df.column("close")?.f64()?.into_iter().collect();
+    let close_vals2: Vec<Option<f64>> = result_df.column("close")?.f64()?.into_iter().collect();
 
-    let mut price_range = Vec::with_capacity(close_vals.len());
-    for i in 0..close_vals.len() {
-        if let (Some(h), Some(l), Some(c)) = (high_vals[i], low_vals[i], close_vals[i]) {
-            if c != 0.0 {
-                price_range.push(Some((h - l) / c));
-            } else {
-                price_range.push(Some(0.0));
+    let price_range: Vec<Option<f64>> = (0..close_vals2.len())
+        .into_par_iter()
+        .map(|i| {
+            match (high_vals[i], low_vals[i], close_vals2[i]) {
+                (Some(h), Some(l), Some(c)) => {
+                    if c != 0.0 { Some((h - l) / c) } else { Some(0.0) }
+                }
+                _ => None,
             }
-        } else {
-            price_range.push(None);
-        }
-    }
+        })
+        .collect();
 
     result_df.with_column(Series::new("price_range".into(), price_range))?;
 

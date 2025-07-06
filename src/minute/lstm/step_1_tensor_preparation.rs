@@ -11,9 +11,11 @@ use rand::Rng;
 use rand::SeedableRng;
 use serde_json;
 use std::convert::Into;
+use rayon::prelude::*;
 
 // Internal modules
 use crate::constants::{EXTENDED_INDICATORS, TECHNICAL_INDICATORS};
+use crate::util::tensor_cache::cache_or_compute;
 
 /// Splits the DataFrame into training and validation sets using time-based cross-validation
 ///
@@ -832,51 +834,60 @@ pub fn dataframe_to_tensors<B: Backend>(
         .position(|&s| s == "close")
         .unwrap_or(0);
 
-    // Process in batches to avoid large memory usage
+    // Process in batches with Rayon parallelism
     let mut all_features = Vec::new();
     let mut all_targets = Vec::new();
 
     for batch_start in (0..max_sequences).step_by(batch_size) {
         let batch_end = (batch_start + batch_size).min(max_sequences);
-        let batch_size = batch_end - batch_start;
+        let indices: Vec<usize> = (batch_start..batch_end).collect();
 
-        // Pre-allocate buffer for this batch
-        let mut feature_buffer = Vec::with_capacity(batch_size * sequence_length * n_cols);
-        let mut target_buffer = Vec::with_capacity(batch_size * forecast_horizon);
+        // Parallel map each sequence to (features, targets) buffers
+        let seq_results: Vec<(Vec<f32>, Vec<f32>)> = indices
+            .into_par_iter()
+            .map(|seq_idx| {
+                let mut local_feat = Vec::with_capacity(sequence_length * n_cols);
+                let mut local_tgt = Vec::with_capacity(forecast_horizon);
 
-        // Extract features for this batch
-        for seq_idx in batch_start..batch_end {
-            // Features (X): sequence_length timesteps of all features
-            for row_idx in seq_idx..(seq_idx + sequence_length) {
-                for col_idx in 0..n_cols {
-                    let f_col = &columns[col_idx];
-                    let value = f_col.get(row_idx).unwrap_or(0.0) as f32;
-                    feature_buffer.push(value);
+                // Features
+                for row_idx in seq_idx..(seq_idx + sequence_length) {
+                    for col_idx in 0..n_cols {
+                        let value = columns[col_idx].get(row_idx).unwrap_or(0.0) as f32;
+                        local_feat.push(value);
+                    }
                 }
-            }
 
-            // Target (y): forecast_horizon timesteps of close price
-            let f_close = &columns[close_idx];
+                // Targets
+                let f_close = &columns[close_idx];
+                for h in 0..forecast_horizon {
+                    let target_idx = seq_idx + sequence_length + h;
+                    let target = if target_idx < n_rows {
+                        f_close.get(target_idx).unwrap_or(0.0) as f32
+                    } else {
+                        0.0
+                    };
+                    local_tgt.push(target);
+                }
 
-            for h in 0..forecast_horizon {
-                let target_idx = seq_idx + sequence_length + h;
-                let target = if target_idx < n_rows {
-                    f_close.get(target_idx).unwrap_or(0.0) as f32
-                } else {
-                    0.0 // Padding for incomplete sequences
-                };
-                target_buffer.push(target);
-            }
+                (local_feat, local_tgt)
+            })
+            .collect();
+
+        // Flatten buffers preserving order of seq_results
+        let mut feature_buffer = Vec::with_capacity((batch_end - batch_start) * sequence_length * n_cols);
+        let mut target_buffer = Vec::with_capacity((batch_end - batch_start) * forecast_horizon);
+
+        for (feat, tgt) in seq_results {
+            feature_buffer.extend_from_slice(&feat);
+            target_buffer.extend_from_slice(&tgt);
         }
 
-        // Create tensors for this batch
-        let features_shape = Shape::new([batch_size, sequence_length, n_cols]);
-        let features =
-            Tensor::<B, 1>::from_floats(feature_buffer.as_slice(), device).reshape(features_shape);
+        // Create tensors
+        let features_shape = Shape::new([(batch_end - batch_start), sequence_length, n_cols]);
+        let features = Tensor::<B, 1>::from_floats(&feature_buffer, device).reshape(features_shape);
 
-        let targets_shape = Shape::new([batch_size, forecast_horizon]);
-        let targets =
-            Tensor::<B, 1>::from_floats(target_buffer.as_slice(), device).reshape(targets_shape);
+        let targets_shape = Shape::new([(batch_end - batch_start), forecast_horizon]);
+        let targets = Tensor::<B, 1>::from_floats(&target_buffer, device).reshape(targets_shape);
 
         all_features.push(features);
         all_targets.push(targets);
@@ -895,7 +906,14 @@ pub fn dataframe_to_tensors<B: Backend>(
         Tensor::cat(all_targets, 0)
     };
 
-    Ok((final_features, final_targets))
+    let cache_key = format!("{}-{}-{}-{}-{}", n_rows, sequence_length, forecast_horizon, use_extended_features, n_cols);
+    if let Ok(cached) = cache_or_compute::<B, _>(&cache_key, || {
+        Ok((final_features, final_targets))
+    }) {
+        return cached;
+    }
+
+    unreachable!()
 }
 
 /// Creates tensors of price differences rather than absolute prices,
