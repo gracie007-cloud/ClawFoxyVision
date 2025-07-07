@@ -907,13 +907,15 @@ pub fn dataframe_to_tensors<B: Backend>(
     };
 
     let cache_key = format!("{}-{}-{}-{}-{}", n_rows, sequence_length, forecast_horizon, use_extended_features, n_cols);
-    if let Ok(cached) = cache_or_compute::<B, _>(&cache_key, || {
-        Ok((final_features, final_targets))
-    }) {
-        return cached;
+    if let Ok(Some(cached)) = crate::util::tensor_cache::load::<B>(&cache_key) {
+        return Ok(cached);
     }
 
-    unreachable!()
+    let result = (final_features, final_targets);
+    // Save to cache (ignore errors silently)
+    let _ = crate::util::tensor_cache::save::<B>(&cache_key, &result);
+
+    Ok(result)
 }
 
 /// Creates tensors of price differences rather than absolute prices,
